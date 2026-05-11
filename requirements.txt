@@ -1,0 +1,7 @@
+tensorflow==2.17.0; python_version < "3.13"    # Crear y entrenar la CNN
+numpy
+sounddevice         #Grabar audio desde el micrófono 
+soundfile           #Guardar audio en formato WAV
+scikit-learn        #Matrices de confusión y otras métricas de evaluación
+matplotlib          #Visualización de resultados mediante gráficos
+pyserial            #Comunicación serial con Arduino
