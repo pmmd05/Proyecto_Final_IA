@@ -63,19 +63,10 @@ COMMANDS = {
     "LUCES_ON": "enciende las luces",
     "LUCES_OFF": "apaga las luces",
 
-    "PUERTA_ABRIR": "abre la puerta",
-    "PUERTA_CERRAR": "cierra la puerta",
-
     "AIRE_ON": "enciende el aire",
     "AIRE_OFF": "apaga el aire",
 
     "BOMBA_REGAR": "riega las plantas",
-
-    "ALARMA_ON": "enciende la alarma",
-    "ALARMA_OFF": "apaga la alarma",
-
-    "ASCENSOR_SUBIR": "sube el ascensor",
-    "ASCENSOR_BAJAR": "baja el ascensor",
 
     "RUIDO_FONDO": "ruido, silencio o habla no relacionada"
 }
@@ -89,17 +80,8 @@ ARDUINO_COMMANDS = {
     "LUCES_ON": "LUZ_ON",
     "LUCES_OFF": "LUZ_OFF",
 
-    "PUERTA_ABRIR": "PUERTA_ABRIR",
-    "PUERTA_CERRAR": "PUERTA_CERRAR",
-
     "AIRE_ON": "AIRE_ON",
     "AIRE_OFF": "AIRE_OFF",
 
     "BOMBA_REGAR": "BOMBA_REGAR",
-
-    "ALARMA_ON": "ALARMA_ON",
-    "ALARMA_OFF": "ALARMA_OFF",
-
-    "ASCENSOR_SUBIR": "ASCENSOR_SUBIR",
-    "ASCENSOR_BAJAR": "ASCENSOR_BAJAR",
 }

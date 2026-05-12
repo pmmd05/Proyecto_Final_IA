@@ -5,19 +5,17 @@ import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
 
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, classification_report
+from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
 from sklearn.model_selection import train_test_split
 
 from config import (
     DATASET_DIR,
     MODELS_DIR,
     COMMANDS,
-    SAMPLE_RATE,
     AUDIO_SAMPLES,
     FRAME_LENGTH,
     FRAME_STEP,
     BATCH_SIZE,
-    EPOCHS,
     VALIDATION_SPLIT,
     TEST_SPLIT,
     RANDOM_SEED,
@@ -25,7 +23,20 @@ from config import (
 
 
 # =========================================================
-# SEMILLAS PARA REPRODUCIBILIDAD
+# CONFIGURACIÓN DEL SEGUNDO ENTRENAMIENTO
+# =========================================================
+
+CONTINUE_EPOCHS = 15
+FINE_TUNE_LEARNING_RATE = 0.0001
+
+MODEL_INPUT = MODELS_DIR / "domotica_cnn.keras"
+CLASS_NAMES_INPUT = MODELS_DIR / "class_names.json"
+
+MODEL_OUTPUT = MODELS_DIR / "domotica_cnn_v2.keras"
+
+
+# =========================================================
+# REPRODUCIBILIDAD
 # =========================================================
 
 tf.random.set_seed(RANDOM_SEED)
@@ -33,14 +44,10 @@ np.random.seed(RANDOM_SEED)
 
 
 # =========================================================
-# CARGA Y PREPROCESAMIENTO DE AUDIO
+# PREPROCESAMIENTO
 # =========================================================
 
 def cargar_audio(ruta_archivo):
-    """
-    Lee un archivo .wav y lo convierte en un tensor de audio.
-    Se ajusta a una duración fija usando recorte o padding.
-    """
     audio_binario = tf.io.read_file(ruta_archivo)
 
     audio, sample_rate = tf.audio.decode_wav(
@@ -69,9 +76,6 @@ def cargar_audio(ruta_archivo):
 
 
 def convertir_a_espectrograma(audio):
-    """
-    Convierte el audio a espectrograma usando STFT.
-    """
     espectrograma = tf.signal.stft(
         audio,
         frame_length=FRAME_LENGTH,
@@ -79,11 +83,7 @@ def convertir_a_espectrograma(audio):
     )
 
     espectrograma = tf.abs(espectrograma)
-
-    # Escala logarítmica para estabilizar valores
     espectrograma = tf.math.log(espectrograma + 1e-6)
-
-    # Se agrega canal para que pueda entrar a Conv2D
     espectrograma = espectrograma[..., tf.newaxis]
 
     return espectrograma
@@ -96,29 +96,33 @@ def preprocesar_audio(ruta_archivo, etiqueta):
 
 
 # =========================================================
-# CONSTRUCCIÓN DEL DATASET
+# DATASET
 # =========================================================
 
-def construir_lista_archivos():
-    """
-    Lee las carpetas del dataset y construye listas de:
-    - rutas de archivos
-    - etiquetas numéricas
-    - nombres de clases
-    """
-    nombres_clases = list(COMMANDS.keys())
+def cargar_clases_guardadas():
+    if not CLASS_NAMES_INPUT.exists():
+        raise FileNotFoundError(
+            f"No se encontró el archivo de clases: {CLASS_NAMES_INPUT}"
+        )
 
+    with open(CLASS_NAMES_INPUT, "r", encoding="utf-8") as archivo:
+        nombres_clases = json.load(archivo)
+
+    return nombres_clases
+
+
+def construir_lista_archivos(nombres_clases):
     archivos = []
     etiquetas = []
 
     for indice, clase in enumerate(nombres_clases):
-        carpeta_clase = DATASET_DIR / clase
+        carpeta = DATASET_DIR / clase
 
-        if not carpeta_clase.exists():
-            print(f"Advertencia: no existe la carpeta {carpeta_clase}")
+        if not carpeta.exists():
+            print(f"Advertencia: no existe la carpeta {carpeta}")
             continue
 
-        archivos_wav = sorted(carpeta_clase.glob("*.wav"))
+        archivos_wav = sorted(carpeta.glob("*.wav"))
 
         for archivo in archivos_wav:
             archivos.append(str(archivo))
@@ -130,13 +134,10 @@ def construir_lista_archivos():
     if len(archivos) == 0:
         raise RuntimeError("No se encontraron archivos .wav en el dataset.")
 
-    return archivos, etiquetas, nombres_clases
+    return archivos, etiquetas
 
 
 def dividir_dataset(archivos, etiquetas):
-    """
-    Divide el dataset en entrenamiento, validación y prueba.
-    """
     test_size_total = TEST_SPLIT + VALIDATION_SPLIT
 
     archivos_train, archivos_temp, etiquetas_train, etiquetas_temp = train_test_split(
@@ -189,66 +190,7 @@ def crear_tf_dataset(archivos, etiquetas, mezclar=False):
 
 
 # =========================================================
-# MODELO CNN
-# =========================================================
-
-def crear_modelo_cnn(input_shape, numero_clases):
-    """
-    CNN entrenada desde cero.
-    No se utiliza ningún modelo preentrenado.
-    """
-    modelo = tf.keras.Sequential([
-        tf.keras.layers.Input(shape=input_shape),
-
-        # Redimensiona el espectrograma para que todos entren igual
-        tf.keras.layers.Resizing(64, 64),
-
-        tf.keras.layers.Conv2D(
-            filters=16,
-            kernel_size=3,
-            padding="same",
-            activation="relu"
-        ),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.MaxPooling2D(),
-
-        tf.keras.layers.Conv2D(
-            filters=32,
-            kernel_size=3,
-            padding="same",
-            activation="relu"
-        ),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.MaxPooling2D(),
-
-        tf.keras.layers.Conv2D(
-            filters=64,
-            kernel_size=3,
-            padding="same",
-            activation="relu"
-        ),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.MaxPooling2D(),
-
-        tf.keras.layers.Flatten(),
-
-        tf.keras.layers.Dense(128, activation="relu"),
-        tf.keras.layers.Dropout(0.35),
-
-        tf.keras.layers.Dense(numero_clases, activation="softmax")
-    ])
-
-    modelo.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-        loss="sparse_categorical_crossentropy",
-        metrics=["accuracy"]
-    )
-
-    return modelo
-
-
-# =========================================================
-# GRÁFICAS Y EVALUACIÓN
+# EVALUACIÓN
 # =========================================================
 
 def guardar_grafica_entrenamiento(historial, ruta_salida):
@@ -257,7 +199,7 @@ def guardar_grafica_entrenamiento(historial, ruta_salida):
     plt.plot(historial.history["accuracy"], label="Entrenamiento")
     plt.plot(historial.history["val_accuracy"], label="Validación")
 
-    plt.title("Exactitud durante el entrenamiento")
+    plt.title("Exactitud durante entrenamiento continuo")
     plt.xlabel("Época")
     plt.ylabel("Accuracy")
     plt.legend()
@@ -273,7 +215,7 @@ def guardar_grafica_perdida(historial, ruta_salida):
     plt.plot(historial.history["loss"], label="Entrenamiento")
     plt.plot(historial.history["val_loss"], label="Validación")
 
-    plt.title("Pérdida durante el entrenamiento")
+    plt.title("Pérdida durante entrenamiento continuo")
     plt.xlabel("Época")
     plt.ylabel("Loss")
     plt.legend()
@@ -294,7 +236,8 @@ def evaluar_modelo(modelo, dataset_prueba, nombres_clases):
         y_real.extend(y_batch.numpy())
         y_predicho.extend(clases_predichas)
 
-    print("\n=== REPORTE DE CLASIFICACIÓN ===\n")
+    print("\n=== REPORTE DE CLASIFICACIÓN - MODELO V2 ===\n")
+
     print(
         classification_report(
             y_real,
@@ -324,9 +267,9 @@ def evaluar_modelo(modelo, dataset_prueba, nombres_clases):
         colorbar=False
     )
 
-    plt.title("Matriz de confusión")
+    plt.title("Matriz de confusión - Modelo V2")
     plt.savefig(
-        MODELS_DIR / "confusion_matrix.png",
+        MODELS_DIR / "confusion_matrix_v2.png",
         dpi=160,
         bbox_inches="tight"
     )
@@ -340,16 +283,27 @@ def evaluar_modelo(modelo, dataset_prueba, nombres_clases):
 def main():
     MODELS_DIR.mkdir(exist_ok=True)
 
-    print("\n=== ENTRENAMIENTO CNN - DOMÓTICA POR VOZ ===\n")
+    print("\n=== ENTRENAMIENTO CONTINUO CNN - DOMÓTICA POR VOZ ===\n")
 
-    archivos, etiquetas, nombres_clases = construir_lista_archivos()
+    if not MODEL_INPUT.exists():
+        raise FileNotFoundError(
+            f"No se encontró el modelo base: {MODEL_INPUT}"
+        )
 
-    print(f"Total de audios encontrados: {len(archivos)}")
+    nombres_clases = cargar_clases_guardadas()
 
-    print("\nClases detectadas:")
+    print("Clases cargadas desde class_names.json:")
+    for i, clase in enumerate(nombres_clases):
+        print(f"{i:02d}. {clase}")
+
+    archivos, etiquetas = construir_lista_archivos(nombres_clases)
+
+    print(f"\nTotal de audios encontrados actualmente: {len(archivos)}")
+
+    print("\nConteo por clase:")
     for i, clase in enumerate(nombres_clases):
         cantidad = np.sum(etiquetas == i)
-        print(f"{i:02d}. {clase:20s} -> {cantidad} audios")
+        print(f"{clase:20s}: {cantidad} audios")
 
     (
         archivos_train,
@@ -360,7 +314,7 @@ def main():
         etiquetas_test
     ) = dividir_dataset(archivos, etiquetas)
 
-    print("\nDivisión del dataset:")
+    print("\nDivisión del dataset actualizado:")
     print(f"Entrenamiento: {len(archivos_train)} audios")
     print(f"Validación:    {len(archivos_val)} audios")
     print(f"Prueba:        {len(archivos_test)} audios")
@@ -383,63 +337,54 @@ def main():
         mezclar=False
     )
 
-    for espectrogramas, _ in dataset_train.take(1):
-        input_shape = espectrogramas.shape[1:]
-        break
+    print("\nCargando modelo anterior...")
+    modelo = tf.keras.models.load_model(MODEL_INPUT)
 
-    print(f"\nForma de entrada del modelo: {input_shape}")
+    print("\nRecompilando modelo con tasa de aprendizaje más baja...")
 
-    modelo = crear_modelo_cnn(
-        input_shape=input_shape,
-        numero_clases=len(nombres_clases)
+    modelo.compile(
+        optimizer=tf.keras.optimizers.Adam(
+            learning_rate=FINE_TUNE_LEARNING_RATE
+        ),
+        loss="sparse_categorical_crossentropy",
+        metrics=["accuracy"]
     )
-
-    print("\nResumen del modelo:")
-    modelo.summary()
 
     callbacks = [
         tf.keras.callbacks.EarlyStopping(
             monitor="val_loss",
-            patience=7,
+            patience=5,
             restore_best_weights=True
         ),
         tf.keras.callbacks.ModelCheckpoint(
-            filepath=str(MODELS_DIR / "domotica_cnn.keras"),
+            filepath=str(MODEL_OUTPUT),
             monitor="val_accuracy",
             save_best_only=True,
             verbose=1
         )
     ]
 
-    print("\nIniciando entrenamiento...\n")
+    print("\nIniciando entrenamiento continuo...\n")
 
     historial = modelo.fit(
         dataset_train,
         validation_data=dataset_val,
-        epochs=EPOCHS,
+        epochs=CONTINUE_EPOCHS,
         callbacks=callbacks
     )
 
-    print("\nGuardando modelo final...")
+    print("\nGuardando modelo actualizado...")
 
-    modelo.save(MODELS_DIR / "domotica_cnn.keras")
-
-    with open(MODELS_DIR / "class_names.json", "w", encoding="utf-8") as archivo_json:
-        json.dump(
-            nombres_clases,
-            archivo_json,
-            indent=2,
-            ensure_ascii=False
-        )
+    modelo.save(MODEL_OUTPUT)
 
     guardar_grafica_entrenamiento(
         historial,
-        MODELS_DIR / "training_accuracy.png"
+        MODELS_DIR / "training_accuracy_v2.png"
     )
 
     guardar_grafica_perdida(
         historial,
-        MODELS_DIR / "training_loss.png"
+        MODELS_DIR / "training_loss_v2.png"
     )
 
     evaluar_modelo(
@@ -448,16 +393,17 @@ def main():
         nombres_clases
     )
 
-    print("\nEntrenamiento terminado.")
+    print("\nEntrenamiento continuo terminado.")
     print("\nArchivos generados:")
-    print(f"- {MODELS_DIR / 'domotica_cnn.keras'}")
-    print(f"- {MODELS_DIR / 'class_names.json'}")
-    print(f"- {MODELS_DIR / 'training_accuracy.png'}")
-    print(f"- {MODELS_DIR / 'training_loss.png'}")
-    print(f"- {MODELS_DIR / 'confusion_matrix.png'}")
+    print(f"- {MODEL_OUTPUT}")
+    print(f"- {MODELS_DIR / 'training_accuracy_v2.png'}")
+    print(f"- {MODELS_DIR / 'training_loss_v2.png'}")
+    print(f"- {MODELS_DIR / 'confusion_matrix_v2.png'}")
+
+    print("\nImportante:")
+    print("El modelo original sigue guardado como domotica_cnn.keras.")
+    print("El modelo mejorado se guardó como domotica_cnn_v2.keras.")
 
 
 if __name__ == "__main__":
     main()
-
-    
