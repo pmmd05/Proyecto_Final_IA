@@ -68,7 +68,9 @@ COMMANDS = {
 
     "BOMBA_REGAR": "riega las plantas",
 
-    "RUIDO_FONDO": "ruido, silencio o habla no relacionada"
+    "RUIDO_FONDO": "ruido, silencio o habla no relacionada",
+    
+    "WAKE_ARIA": "aria"
 }
 
 
