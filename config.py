@@ -4,7 +4,7 @@ from pathlib import Path
 # RUTAS PRINCIPALES DEL PROYECTO
 # =========================================================
 
-DATASET_DIR = Path("dataset_domotica_voz")
+DATASET_DIR = Path("dataset_domotica_voz_augmented")
 MODELS_DIR = Path("models")
 
 
