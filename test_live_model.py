@@ -21,8 +21,8 @@ from config import (
 # =========================================================
 
 def cargar_modelo_y_clases():
-    ruta_modelo = MODELS_DIR / "domotica_cnn.keras"
-    ruta_clases = MODELS_DIR / "class_names.json"
+    ruta_modelo = MODELS_DIR / "domotica_gru.keras"
+    ruta_clases = MODELS_DIR / "class_names_gru.json"
 
     if not ruta_modelo.exists():
         raise FileNotFoundError(f"No se encontró el modelo: {ruta_modelo}")
@@ -156,7 +156,7 @@ def mostrar_resultados(clase_predicha, confianza, predicciones, nombres_clases):
 # =========================================================
 
 def main():
-    print("\n=== PRUEBA EN VIVO DEL MODELO CNN ===")
+    print("\n=== PRUEBA EN VIVO DEL MODELO GRU ===")
 
     modelo, nombres_clases = cargar_modelo_y_clases()
 
