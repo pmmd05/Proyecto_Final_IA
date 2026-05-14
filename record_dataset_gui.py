@@ -7,7 +7,10 @@ import numpy as np
 import sounddevice as sd
 import soundfile as sf
 
-from config import DATASET_DIR, COMMANDS, SAMPLE_RATE
+from config import COMMANDS, SAMPLE_RATE
+
+
+BASE_DATASET_DIR = Path("dataset_domotica_voz")
 
 
 class GrabadorDatasetApp:
@@ -35,10 +38,10 @@ class GrabadorDatasetApp:
     # =====================================================
 
     def crear_carpetas(self):
-        DATASET_DIR.mkdir(exist_ok=True)
+        BASE_DATASET_DIR.mkdir(exist_ok=True)
 
         for etiqueta in COMMANDS:
-            carpeta = DATASET_DIR / etiqueta
+            carpeta = BASE_DATASET_DIR / etiqueta
             carpeta.mkdir(parents=True, exist_ok=True)
 
     # =====================================================
@@ -360,7 +363,7 @@ class GrabadorDatasetApp:
         entorno_id = self.entorno_entry.get().strip()
         clase = self.class_names[self.current_class_index]
 
-        carpeta = DATASET_DIR / clase
+        carpeta = BASE_DATASET_DIR / clase
         carpeta.mkdir(parents=True, exist_ok=True)
 
         numero = self.obtener_siguiente_numero(carpeta, persona_id, entorno_id)
@@ -394,7 +397,7 @@ class GrabadorDatasetApp:
         entorno_id = self.entorno_entry.get().strip()
         clase = self.class_names[self.current_class_index]
 
-        carpeta = DATASET_DIR / clase
+        carpeta = BASE_DATASET_DIR / clase
 
         if not carpeta.exists():
             return 0
