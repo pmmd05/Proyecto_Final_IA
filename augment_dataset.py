@@ -12,6 +12,7 @@ from config import DATASET_DIR, SAMPLE_RATE, COMMANDS
 # CONFIGURACIÓN
 # =========================================================
 
+SOURCE_DATASET_DIR = Path("dataset_domotica_voz")
 AUGMENTED_DIR = Path("dataset_domotica_voz_augmented")
 
 RANDOM_SEED = 42
@@ -144,7 +145,7 @@ def augmentar_dataset():
     print("\n=== DATA AUGMENTATION DEL DATASET ===\n")
 
     for clase in COMMANDS.keys():
-        carpeta_origen = DATASET_DIR / clase
+        carpeta_origen = SOURCE_DATASET_DIR / clase
         carpeta_destino = AUGMENTED_DIR / clase
 
         if not carpeta_origen.exists():
