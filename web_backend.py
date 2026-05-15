@@ -24,6 +24,9 @@ from config import (
     FRAME_STEP,
     CONFIDENCE_THRESHOLD,
     ARDUINO_COMMANDS,
+    MEL_BINS,
+    LOWER_EDGE_HERTZ,
+    UPPER_EDGE_HERTZ,
 )
 
 
@@ -31,8 +34,8 @@ from config import (
 # CONFIGURACIÓN DEL MODELO GRU
 # =========================================================
 
-MODEL_PATH = MODELS_DIR / "domotica_gru.keras"
-CLASS_NAMES_PATH = MODELS_DIR / "class_names_gru.json"
+MODEL_PATH = MODELS_DIR / "domotica_gru_mel.keras"
+CLASS_NAMES_PATH = MODELS_DIR / "class_names_gru_mel.json"
 
 BACKGROUND_CLASS = "RUIDO_FONDO"
 
@@ -463,24 +466,51 @@ class VoiceService:
     # -----------------------------------------------------
 
     def convert_to_spectral_sequence(self, audio):
+        """
+        Convierte el audio segmentado a Log Mel-Spectrogram.
+
+        Debe coincidir con train_model_gru_mel.py.
+
+        Salida:
+        1 x pasos_de_tiempo x bandas_mel
+        """
+
         audio = self.adjust_audio_duration(audio)
         audio = tf.convert_to_tensor(audio, dtype=tf.float32)
 
-        spectrogram = tf.signal.stft(
+        stft = tf.signal.stft(
             audio,
             frame_length=FRAME_LENGTH,
             frame_step=FRAME_STEP
         )
 
-        spectrogram = tf.abs(spectrogram)
-        spectrogram = tf.math.log(spectrogram + 1e-6)
+        spectrogram = tf.abs(stft)
 
-        mean = tf.reduce_mean(spectrogram)
-        std = tf.math.reduce_std(spectrogram)
+        num_spectrogram_bins = FRAME_LENGTH // 2 + 1
 
-        spectrogram = (spectrogram - mean) / (std + 1e-6)
+        mel_weight_matrix = tf.signal.linear_to_mel_weight_matrix(
+            num_mel_bins=MEL_BINS,
+            num_spectrogram_bins=num_spectrogram_bins,
+            sample_rate=SAMPLE_RATE,
+            lower_edge_hertz=LOWER_EDGE_HERTZ,
+            upper_edge_hertz=UPPER_EDGE_HERTZ
+        )
 
-        sequence = spectrogram[tf.newaxis, ...]
+        mel_spectrogram = tf.matmul(
+            spectrogram,
+            mel_weight_matrix
+        )
+
+        log_mel_spectrogram = tf.math.log(mel_spectrogram + 1e-6)
+
+        mean = tf.reduce_mean(log_mel_spectrogram)
+        std = tf.math.reduce_std(log_mel_spectrogram)
+
+        log_mel_spectrogram = (
+            log_mel_spectrogram - mean
+        ) / (std + 1e-6)
+
+        sequence = log_mel_spectrogram[tf.newaxis, ...]
 
         return sequence
 

@@ -34,6 +34,13 @@ FRAME_LENGTH = 256
 # Desplazamiento entre ventanas.
 FRAME_STEP = 128
 
+# =========================================================
+# CONFIGURACIÓN MEL-SPECTROGRAM
+# =========================================================
+
+MEL_BINS = 40
+LOWER_EDGE_HERTZ = 80.0
+UPPER_EDGE_HERTZ = 7600.0
 
 # =========================================================
 # CONFIGURACIÓN DE ENTRENAMIENTO
