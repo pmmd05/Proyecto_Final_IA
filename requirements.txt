@@ -6,5 +6,5 @@ scikit-learn        #Matrices de confusión y otras métricas de evaluación
 matplotlib          #Visualización de resultados mediante gráficos
 pyserial            #Comunicación serial con Arduino
 fastapi             # Framework web para la API
-uvicorn             # Servidor ASGI
+uvicorn[standard]   # Servidor ASGI (incluye websockets/wsproto)
 pydantic            # Validación de datos
