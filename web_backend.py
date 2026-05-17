@@ -4,7 +4,6 @@ import queue
 import threading
 import asyncio
 from collections import deque
-from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
@@ -31,7 +30,7 @@ from config import (
 
 
 # =========================================================
-# CONFIGURACIÓN DEL MODELO GRU
+# MODELO FINAL: GRU + LOG MEL-SPECTROGRAM
 # =========================================================
 
 MODEL_PATH = MODELS_DIR / "domotica_gru_mel.keras"
@@ -51,6 +50,10 @@ PRE_ROLL_SECONDS = 0.35
 PRE_ROLL_BLOCKS = int(PRE_ROLL_SECONDS / BLOCK_SECONDS)
 
 BASE_ENERGY_THRESHOLD = 0.020
+
+# Si el VAD no funciona bien, puedes colocar un valor manual:
+# Ejemplo: 0.12, 0.18, 0.22
+# Si está en None, usa calibración automática.
 MANUAL_ENERGY_THRESHOLD = None
 
 USE_ZCR = True
@@ -127,10 +130,7 @@ manager = ConnectionManager()
 
 
 def emit_event(event: dict):
-    """
-    Permite enviar eventos desde el hilo del micrófono hacia el WebSocket.
-    """
-    loop = app.state.loop
+    loop = getattr(app.state, "loop", None)
 
     if loop is not None:
         asyncio.run_coroutine_threadsafe(manager.broadcast(event), loop)
@@ -160,7 +160,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 # =========================================================
-# VOICE SERVICE
+# SERVICIO PRINCIPAL DE VOZ
 # =========================================================
 
 class VoiceService:
@@ -170,6 +170,7 @@ class VoiceService:
 
         self.audio_queue = queue.Queue()
         self.stop_event = threading.Event()
+
         self.worker_thread = None
         self.stream = None
 
@@ -180,7 +181,7 @@ class VoiceService:
         self.use_arduino = False
 
     # -----------------------------------------------------
-    # Modelo
+    # Cargar modelo
     # -----------------------------------------------------
 
     def load_model(self):
@@ -188,16 +189,19 @@ class VoiceService:
             raise FileNotFoundError(f"No se encontró el modelo: {MODEL_PATH}")
 
         if not CLASS_NAMES_PATH.exists():
-            raise FileNotFoundError(f"No se encontró class_names_gru.json: {CLASS_NAMES_PATH}")
+            raise FileNotFoundError(f"No se encontró el archivo de clases: {CLASS_NAMES_PATH}")
 
         self.model = tf.keras.models.load_model(MODEL_PATH)
 
         with open(CLASS_NAMES_PATH, "r", encoding="utf-8") as file:
             self.class_names = json.load(file)
 
+        if BACKGROUND_CLASS not in self.class_names:
+            raise ValueError(f"No se encontró la clase {BACKGROUND_CLASS}")
+
         emit_event({
             "type": "status",
-            "message": "Modelo GRU cargado correctamente."
+            "message": "Modelo GRU + Mel cargado correctamente."
         })
 
         emit_event({
@@ -236,6 +240,10 @@ class VoiceService:
 
     def send_to_arduino(self, command: str):
         if not self.use_arduino:
+            emit_event({
+                "type": "log",
+                "message": f"Arduino desactivado. Comando no enviado: {command}"
+            })
             return
 
         if self.serial_connection is None:
@@ -245,15 +253,22 @@ class VoiceService:
             })
             return
 
-        self.serial_connection.write((command + "\n").encode("utf-8"))
+        try:
+            self.serial_connection.write((command + "\n").encode("utf-8"))
 
-        emit_event({
-            "type": "log",
-            "message": f"Enviado a Arduino: {command}"
-        })
+            emit_event({
+                "type": "log",
+                "message": f"Enviado a Arduino: {command}"
+            })
+
+        except Exception as e:
+            emit_event({
+                "type": "error",
+                "message": f"Error enviando a Arduino: {e}"
+            })
 
     # -----------------------------------------------------
-    # Audio callback
+    # Audio
     # -----------------------------------------------------
 
     def audio_callback(self, indata, frames, time_info, status):
@@ -268,10 +283,6 @@ class VoiceService:
                 self.audio_queue.get_nowait()
             except queue.Empty:
                 break
-
-    # -----------------------------------------------------
-    # VAD helpers
-    # -----------------------------------------------------
 
     def calculate_energy(self, audio):
         audio = np.asarray(audio, dtype=np.float32)
@@ -310,6 +321,10 @@ class VoiceService:
 
         return audio
 
+    # -----------------------------------------------------
+    # VAD
+    # -----------------------------------------------------
+
     def block_has_voice(self, audio, energy_threshold):
         energy = self.calculate_energy(audio)
         zcr = self.calculate_zcr(audio)
@@ -325,6 +340,10 @@ class VoiceService:
 
     def calibrate_noise(self, seconds=2.0):
         if MANUAL_ENERGY_THRESHOLD is not None:
+            emit_event({
+                "type": "log",
+                "message": f"Umbral VAD manual usado: {MANUAL_ENERGY_THRESHOLD:.5f}"
+            })
             return MANUAL_ENERGY_THRESHOLD
 
         emit_event({
@@ -385,7 +404,10 @@ class VoiceService:
 
             block = np.squeeze(block)
 
-            has_voice, energy, zcr = self.block_has_voice(block, energy_threshold)
+            has_voice, energy, zcr = self.block_has_voice(
+                block,
+                energy_threshold
+            )
 
             emit_event({
                 "type": "energy",
@@ -462,19 +484,10 @@ class VoiceService:
         return None
 
     # -----------------------------------------------------
-    # GRU preprocessing
+    # Log Mel-Spectrogram
     # -----------------------------------------------------
 
-    def convert_to_spectral_sequence(self, audio):
-        """
-        Convierte el audio segmentado a Log Mel-Spectrogram.
-
-        Debe coincidir con train_model_gru_mel.py.
-
-        Salida:
-        1 x pasos_de_tiempo x bandas_mel
-        """
-
+    def convert_to_log_mel_spectrogram(self, audio):
         audio = self.adjust_audio_duration(audio)
         audio = tf.convert_to_tensor(audio, dtype=tf.float32)
 
@@ -510,12 +523,18 @@ class VoiceService:
             log_mel_spectrogram - mean
         ) / (std + 1e-6)
 
+        # Entrada para GRU:
+        # batch × tiempo × bandas Mel
         sequence = log_mel_spectrogram[tf.newaxis, ...]
 
         return sequence
 
+    # -----------------------------------------------------
+    # Predicción
+    # -----------------------------------------------------
+
     def predict_audio(self, audio):
-        sequence = self.convert_to_spectral_sequence(audio)
+        sequence = self.convert_to_log_mel_spectrogram(audio)
 
         predictions = self.model.predict(sequence, verbose=0)[0]
 
@@ -536,11 +555,15 @@ class VoiceService:
         return predicted_class, confidence, top3
 
     # -----------------------------------------------------
-    # Main loop
+    # Inicio / detener escucha
     # -----------------------------------------------------
 
     def start(self):
         if self.is_listening:
+            emit_event({
+                "type": "log",
+                "message": "La escucha ya estaba iniciada."
+            })
             return
 
         self.stop_event.clear()
@@ -571,6 +594,10 @@ class VoiceService:
             "type": "status",
             "message": "Escucha detenida."
         })
+
+    # -----------------------------------------------------
+    # Loop principal
+    # -----------------------------------------------------
 
     def listen_loop(self):
         try:
@@ -667,7 +694,7 @@ voice_service = VoiceService()
 
 
 # =========================================================
-# API MODELS
+# MODELOS DE PETICIÓN API
 # =========================================================
 
 class ArduinoConnectRequest(BaseModel):
@@ -683,7 +710,7 @@ class ManualCommandRequest(BaseModel):
 
 
 # =========================================================
-# API ROUTES
+# RUTAS API
 # =========================================================
 
 @app.post("/api/start")
