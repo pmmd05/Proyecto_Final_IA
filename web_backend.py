@@ -3,7 +3,10 @@ import time
 import queue
 import threading
 import asyncio
+import csv
 from collections import deque
+from pathlib import Path
+from datetime import datetime
 
 import numpy as np
 import sounddevice as sd
@@ -40,6 +43,13 @@ BACKGROUND_CLASS = "RUIDO_FONDO"
 
 
 # =========================================================
+# ARCHIVO PARA GUARDAR LATENCIAS
+# =========================================================
+
+LATENCY_LOG_PATH = Path("latency_results.csv")
+
+
+# =========================================================
 # CONFIGURACIÓN DEL VAD
 # =========================================================
 
@@ -51,9 +61,8 @@ PRE_ROLL_BLOCKS = int(PRE_ROLL_SECONDS / BLOCK_SECONDS)
 
 BASE_ENERGY_THRESHOLD = 0.020
 
-# Si el VAD no funciona bien, puedes colocar un valor manual:
+# Si necesitas forzar manualmente:
 # Ejemplo: 0.12, 0.18, 0.22
-# Si está en None, usa calibración automática.
 MANUAL_ENERGY_THRESHOLD = None
 
 USE_ZCR = True
@@ -181,7 +190,7 @@ class VoiceService:
         self.use_arduino = False
 
     # -----------------------------------------------------
-    # Cargar modelo
+    # Modelo
     # -----------------------------------------------------
 
     def load_model(self):
@@ -199,6 +208,8 @@ class VoiceService:
         if BACKGROUND_CLASS not in self.class_names:
             raise ValueError(f"No se encontró la clase {BACKGROUND_CLASS}")
 
+        self.ensure_latency_csv()
+
         emit_event({
             "type": "status",
             "message": "Modelo GRU + Mel cargado correctamente."
@@ -210,6 +221,66 @@ class VoiceService:
         })
 
     # -----------------------------------------------------
+    # CSV de latencia
+    # -----------------------------------------------------
+
+    def ensure_latency_csv(self):
+        if not LATENCY_LOG_PATH.exists():
+            with open(LATENCY_LOG_PATH, "w", newline="", encoding="utf-8") as file:
+                writer = csv.writer(file)
+                writer.writerow([
+                    "timestamp",
+                    "predicted_class",
+                    "confidence",
+                    "accepted",
+                    "arduino_command",
+                    "vad_ms",
+                    "preprocess_ms",
+                    "inference_ms",
+                    "decision_ms",
+                    "serial_ms",
+                    "ack_ms",
+                    "total_ms",
+                    "fps_inference",
+                    "fps_total"
+                ])
+
+    def save_latency_row(
+        self,
+        predicted_class,
+        confidence,
+        accepted,
+        arduino_cmd,
+        vad_ms,
+        preprocess_ms,
+        inference_ms,
+        decision_ms,
+        serial_ms,
+        ack_ms,
+        total_ms,
+        fps_inference,
+        fps_total
+    ):
+        with open(LATENCY_LOG_PATH, "a", newline="", encoding="utf-8") as file:
+            writer = csv.writer(file)
+            writer.writerow([
+                datetime.now().isoformat(timespec="seconds"),
+                predicted_class,
+                f"{confidence:.4f}",
+                accepted,
+                arduino_cmd,
+                f"{vad_ms:.2f}",
+                f"{preprocess_ms:.2f}",
+                f"{inference_ms:.2f}",
+                f"{decision_ms:.2f}",
+                f"{serial_ms:.2f}",
+                f"{ack_ms:.2f}",
+                f"{total_ms:.2f}",
+                f"{fps_inference:.2f}",
+                f"{fps_total:.2f}",
+            ])
+
+    # -----------------------------------------------------
     # Arduino
     # -----------------------------------------------------
 
@@ -219,6 +290,9 @@ class VoiceService:
 
         self.serial_connection = serial.Serial(port, 9600, timeout=1)
         time.sleep(2)
+
+        # Limpiar mensajes iniciales del Arduino
+        self.clear_serial_buffer()
 
         emit_event({
             "type": "arduino",
@@ -238,34 +312,108 @@ class VoiceService:
             "message": "Arduino desconectado."
         })
 
-    def send_to_arduino(self, command: str):
+    def clear_serial_buffer(self):
+        if self.serial_connection is None:
+            return
+
+        try:
+            while self.serial_connection.in_waiting > 0:
+                self.serial_connection.readline()
+        except Exception:
+            pass
+
+    def send_to_arduino_with_ack(self, command: str):
+        """
+        Envía comando al Arduino y mide:
+        - tiempo de escritura Serial
+        - tiempo hasta recibir ACK
+
+        Retorna:
+        serial_ms, ack_ms, ack_text
+        """
+
         if not self.use_arduino:
             emit_event({
                 "type": "log",
                 "message": f"Arduino desactivado. Comando no enviado: {command}"
             })
-            return
+            return 0.0, 0.0, "ARDUINO_DISABLED"
 
         if self.serial_connection is None:
             emit_event({
                 "type": "log",
                 "message": "No se envió a Arduino: no está conectado."
             })
-            return
+            return 0.0, 0.0, "ARDUINO_NOT_CONNECTED"
 
         try:
+            self.clear_serial_buffer()
+
+            t_serial_start = time.perf_counter()
+
             self.serial_connection.write((command + "\n").encode("utf-8"))
+            self.serial_connection.flush()
+
+            t_serial_end = time.perf_counter()
+
+            serial_ms = (t_serial_end - t_serial_start) * 1000.0
+
+            # Esperar ACK del Arduino
+            ack_text = ""
+            t_ack_start = time.perf_counter()
+            ack_timeout_seconds = 1.5
+
+            while time.perf_counter() - t_ack_start < ack_timeout_seconds:
+                if self.serial_connection.in_waiting > 0:
+                    line = self.serial_connection.readline().decode("utf-8", errors="ignore").strip()
+
+                    if line:
+                        emit_event({
+                            "type": "log",
+                            "message": f"Arduino responde: {line}"
+                        })
+
+                        # Tomamos como ACK cualquier línea que empiece con ACK_
+                        if line.startswith("ACK_"):
+                            ack_text = line
+                            break
+
+            t_ack_end = time.perf_counter()
+
+            ack_ms = (t_ack_end - t_serial_end) * 1000.0 if ack_text else 0.0
+
+            if ack_text:
+                emit_event({
+                    "type": "log",
+                    "message": f"ACK recibido: {ack_text} | ACK latency: {ack_ms:.2f} ms"
+                })
+            else:
+                emit_event({
+                    "type": "log",
+                    "message": "No se recibió ACK dentro del tiempo esperado."
+                })
 
             emit_event({
                 "type": "log",
-                "message": f"Enviado a Arduino: {command}"
+                "message": f"Enviado a Arduino: {command} | Serial: {serial_ms:.2f} ms"
             })
+
+            return serial_ms, ack_ms, ack_text
 
         except Exception as e:
             emit_event({
                 "type": "error",
                 "message": f"Error enviando a Arduino: {e}"
             })
+            return 0.0, 0.0, "ERROR"
+
+    def send_manual_command(self, command: str):
+        serial_ms, ack_ms, ack_text = self.send_to_arduino_with_ack(command)
+
+        emit_event({
+            "type": "log",
+            "message": f"Prueba manual enviada: {command} | Serial: {serial_ms:.2f} ms | ACK: {ack_ms:.2f} ms | {ack_text}"
+        })
 
     # -----------------------------------------------------
     # Audio
@@ -523,36 +671,9 @@ class VoiceService:
             log_mel_spectrogram - mean
         ) / (std + 1e-6)
 
-        # Entrada para GRU:
-        # batch × tiempo × bandas Mel
         sequence = log_mel_spectrogram[tf.newaxis, ...]
 
         return sequence
-
-    # -----------------------------------------------------
-    # Predicción
-    # -----------------------------------------------------
-
-    def predict_audio(self, audio):
-        sequence = self.convert_to_log_mel_spectrogram(audio)
-
-        predictions = self.model.predict(sequence, verbose=0)[0]
-
-        predicted_index = int(np.argmax(predictions))
-        predicted_class = self.class_names[predicted_index]
-        confidence = float(predictions[predicted_index])
-
-        top_indices = np.argsort(predictions)[::-1][:3]
-
-        top3 = [
-            {
-                "class": self.class_names[i],
-                "confidence": float(predictions[i])
-            }
-            for i in top_indices
-        ]
-
-        return predicted_class, confidence, top3
 
     # -----------------------------------------------------
     # Inicio / detener escucha
@@ -596,7 +717,7 @@ class VoiceService:
         })
 
     # -----------------------------------------------------
-    # Loop principal
+    # Loop principal con medición de latencia
     # -----------------------------------------------------
 
     def listen_loop(self):
@@ -622,7 +743,16 @@ class VoiceService:
                 })
 
                 while not self.stop_event.is_set():
+
+                    # =============================================
+                    # 1. Captura + VAD
+                    # =============================================
+
+                    t_start_total = time.perf_counter()
+
                     audio = self.get_next_utterance(self.energy_threshold)
+
+                    t_end_vad = time.perf_counter()
 
                     if audio is None:
                         continue
@@ -632,7 +762,41 @@ class VoiceService:
                         "message": "Clasificando comando..."
                     })
 
-                    predicted_class, confidence, top3 = self.predict_audio(audio)
+                    # =============================================
+                    # 2. Preprocesamiento + Log Mel
+                    # =============================================
+
+                    t_start_preprocess = time.perf_counter()
+
+                    sequence = self.convert_to_log_mel_spectrogram(audio)
+
+                    t_end_preprocess = time.perf_counter()
+
+                    # =============================================
+                    # 3. Inferencia GRU
+                    # =============================================
+
+                    predictions = self.model.predict(sequence, verbose=0)[0]
+
+                    t_end_inference = time.perf_counter()
+
+                    # =============================================
+                    # 4. Decisión del backend
+                    # =============================================
+
+                    predicted_index = int(np.argmax(predictions))
+                    predicted_class = self.class_names[predicted_index]
+                    confidence = float(predictions[predicted_index])
+
+                    top_indices = np.argsort(predictions)[::-1][:3]
+
+                    top3 = [
+                        {
+                            "class": self.class_names[i],
+                            "confidence": float(predictions[i])
+                        }
+                        for i in top_indices
+                    ]
 
                     action = ACTION_LABELS.get(predicted_class, predicted_class)
                     arduino_cmd = ARDUINO_COMMANDS.get(predicted_class, "--")
@@ -641,6 +805,12 @@ class VoiceService:
                         predicted_class != BACKGROUND_CLASS
                         and confidence >= COMMAND_CONFIDENCE_THRESHOLD
                     )
+
+                    t_end_decision = time.perf_counter()
+
+                    serial_ms = 0.0
+                    ack_ms = 0.0
+                    ack_text = ""
 
                     emit_event({
                         "type": "prediction",
@@ -671,7 +841,69 @@ class VoiceService:
                         })
 
                         if arduino_cmd != "--":
-                            self.send_to_arduino(arduino_cmd)
+                            serial_ms, ack_ms, ack_text = self.send_to_arduino_with_ack(arduino_cmd)
+
+                    t_end_total = time.perf_counter()
+
+                    # =============================================
+                    # Cálculo de latencias
+                    # =============================================
+
+                    vad_ms = (t_end_vad - t_start_total) * 1000.0
+                    preprocess_ms = (t_end_preprocess - t_start_preprocess) * 1000.0
+                    inference_ms = (t_end_inference - t_end_preprocess) * 1000.0
+                    decision_ms = (t_end_decision - t_end_inference) * 1000.0
+                    total_ms = (t_end_total - t_start_total) * 1000.0
+
+                    fps_inference = 1000.0 / inference_ms if inference_ms > 0 else 0.0
+                    fps_total = 1000.0 / total_ms if total_ms > 0 else 0.0
+
+                    latency_message = (
+                        f"Latencia | "
+                        f"VAD: {vad_ms:.2f} ms | "
+                        f"Preproc: {preprocess_ms:.2f} ms | "
+                        f"Inferencia: {inference_ms:.2f} ms | "
+                        f"Decisión: {decision_ms:.2f} ms | "
+                        f"Serial: {serial_ms:.2f} ms | "
+                        f"ACK: {ack_ms:.2f} ms | "
+                        f"Total: {total_ms:.2f} ms | "
+                        f"FPS inferencia: {fps_inference:.2f} | "
+                        f"FPS total: {fps_total:.2f}"
+                    )
+
+                    emit_event({
+                        "type": "log",
+                        "message": latency_message
+                    })
+
+                    emit_event({
+                        "type": "latency",
+                        "vad_ms": vad_ms,
+                        "preprocess_ms": preprocess_ms,
+                        "inference_ms": inference_ms,
+                        "decision_ms": decision_ms,
+                        "serial_ms": serial_ms,
+                        "ack_ms": ack_ms,
+                        "total_ms": total_ms,
+                        "fps_inference": fps_inference,
+                        "fps_total": fps_total
+                    })
+
+                    self.save_latency_row(
+                        predicted_class=predicted_class,
+                        confidence=confidence,
+                        accepted=accepted,
+                        arduino_cmd=arduino_cmd,
+                        vad_ms=vad_ms,
+                        preprocess_ms=preprocess_ms,
+                        inference_ms=inference_ms,
+                        decision_ms=decision_ms,
+                        serial_ms=serial_ms,
+                        ack_ms=ack_ms,
+                        total_ms=total_ms,
+                        fps_inference=fps_inference,
+                        fps_total=fps_total
+                    )
 
                     emit_event({
                         "type": "status",
@@ -765,7 +997,7 @@ def use_arduino(request: UseArduinoRequest):
 
 @app.post("/api/arduino/manual")
 def manual_command(request: ManualCommandRequest):
-    voice_service.send_to_arduino(request.command)
+    voice_service.send_manual_command(request.command)
 
     return {
         "ok": True,
