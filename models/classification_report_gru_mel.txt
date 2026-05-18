@@ -1,0 +1,16 @@
+=== REPORTE DE CLASIFICACIÓN - GRU + LOG MEL-SPECTROGRAM ===
+
+Accuracy general: 0.9906
+
+              precision    recall  f1-score   support
+
+    LUCES_ON       0.99      0.99      0.99       322
+   LUCES_OFF       0.99      0.99      0.99       322
+     AIRE_ON       0.99      0.99      0.99       322
+    AIRE_OFF       1.00      1.00      1.00       322
+ BOMBA_REGAR       0.98      1.00      0.99       322
+ RUIDO_FONDO       0.99      0.98      0.98       301
+
+    accuracy                           0.99      1911
+   macro avg       0.99      0.99      0.99      1911
+weighted avg       0.99      0.99      0.99      1911
